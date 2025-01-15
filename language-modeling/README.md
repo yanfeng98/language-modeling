@@ -21,7 +21,7 @@ python language-modeling/run_clm.py \
     --per_device_eval_batch_size 1 \
     --do_train \
     --do_eval \
-    --output_dir /tmp/test-clm \
+    --output_dir ./saves/gpt2 \
     --max_train_samples 30 \
     --validation_split_percentage 10
 ```
