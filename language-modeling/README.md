@@ -26,8 +26,6 @@ python language-modeling/run_clm.py \
     --validation_split_percentage 10
 ```
 
-This takes about half an hour to train on a single K80 GPU and about one minute for the evaluation to run. It reaches a score of ~20 perplexity once fine-tuned on the dataset.
-
 To run on your own training and validation files, use the following command:
 
 ```bash
@@ -50,6 +48,23 @@ python run_clm_no_trainer.py \
     --dataset_config_name wikitext-2-raw-v1 \
     --model_name_or_path openai-community/gpt2 \
     --output_dir /tmp/test-clm
+```
+
+### Qwen
+
+```bash
+python language-modeling/run_clm.py \
+    --model_name_or_path Qwen/Qwen2.5-Coder-0.5B-Instruct \
+    --train_file data/c4_demo.json \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --block_size 64 \
+    --do_train \
+    --do_eval \
+    --output_dir ./saves/qwen2.5 \
+    --max_train_samples 30 \
+    --num_train_epochs 1 \
+    --validation_split_percentage 10
 ```
 
 ### GPT-2/GPT and causal language modeling with fill-in-the middle objective

@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
+from typing import Dict, List
 
 import datasets
 import evaluate
@@ -25,6 +26,7 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
+    PreTrainedTokenizer,
     HfArgumentParser,
     Trainer,
     TrainingArguments,
@@ -479,6 +481,7 @@ def main():
                 f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
             )
         block_size = min(data_args.block_size, tokenizer.model_max_length)
+    logger.info(f"block_size: {block_size}")
 
     # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
     def group_texts(examples):
@@ -517,6 +520,12 @@ def main():
                 group_texts,
                 batched=True,
             )
+
+    def print_unsupervised_dataset_example(example: Dict[str, List[int]],   tokenizer: "PreTrainedTokenizer") -> None:
+        print("input_ids:\n{}".format(example["input_ids"]))
+        print("inputs:\n{}".format(tokenizer.decode(example["input_ids"],   skip_special_tokens=False)))
+
+    print_unsupervised_dataset_example(next(iter(lm_datasets["train"])), tokenizer)
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
