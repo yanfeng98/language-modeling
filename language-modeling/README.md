@@ -74,17 +74,19 @@ The following example fine-tunes GPT-2 on WikiText-2 but using the Fill-in-middl
 We're using the raw WikiText-2 (no tokens were replaced before the tokenization). The loss here is that of causal language modeling.
 
 ```bash
-python run_fim.py \
-    --model_name_or_path gpt2 \
+python language-modeling/run_fim.py \
+    --model_name_or_path openai-community/gpt2 \
     --dataset_name wikitext \
     --dataset_config_name wikitext-2-raw-v1 \
-    --per_device_train_batch_size 8 \
-    --per_device_eval_batch_size 8 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
     --fim_rate 0.5 \
     --fim_spm_rate 0.2 \
     --do_train \
     --do_eval \
-    --output_dir /tmp/test-clm
+    --output_dir ./saves/gpt2-fim \
+    --max_train_samples 30 \
+    --validation_split_percentage 10
 ```
 
 To run on your own training and validation files, use the following command:

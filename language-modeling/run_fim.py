@@ -1,26 +1,9 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """
-Fine-tuning the library models for causal language modeling using
-Fill-in-the middle (FIM) objective on a text file or a dataset.
+Fine-tuning the library models for causal language modeling using Fill-in-the middle (FIM) objective on a text file or a dataset.
 
 Here is the full list of checkpoints on the hub that can be fine-tuned by this script:
 https://huggingface.co/models?filter=text-generation
 """
-# You should adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
 import logging
 import math
@@ -29,6 +12,7 @@ import sys
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
+from typing import Dict, List
 
 import datasets
 import evaluate
@@ -43,6 +27,7 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
+    PreTrainedTokenizer,
     HfArgumentParser,
     Trainer,
     TrainingArguments,
@@ -53,12 +38,7 @@ from transformers import (
 from transformers.integrations import is_deepspeed_zero3_enabled
 from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
-
-
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.49.0.dev0")
 
 require_version("datasets>=2.14.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
 
@@ -303,9 +283,6 @@ class DataTrainingArguments:
 
 
 def main():
-    # See all possible arguments in src/transformers/training_args.py
-    # or by passing the --help flag to this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -314,10 +291,6 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_fim", model_args, data_args)
 
     # Setup logging
     logging.basicConfig(
@@ -342,7 +315,7 @@ def main():
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
     )
-    logger.info(f"Training/evaluation parameters {training_args}")
+    logger.info(f"Training/evaluation parameters:\n{training_args}")
 
     # Detecting last checkpoint.
     last_checkpoint = None
@@ -523,11 +496,8 @@ def main():
 
     # Get the factor by which the embedding layer should be padded based on the device
     pad_factor = 1
-    if torch.cuda.is_availble():
+    if torch.cuda.is_available():
         pad_factor = 8
-
-    elif is_torch_tpu_available():
-        pad_factor = 128
 
     # Add the new tokens to the tokenizer
     tokenizer.add_tokens(special_tokens)
@@ -556,7 +526,7 @@ def main():
                 dim=0,
             )
     else:
-        original_embeddings = model.get_input_embeddings()
+        original_embeddings = model.get_input_embeddings().weight.data
         # Get the pre-expansion embeddings of the model and resize the embedding layer
         model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=pad_factor)
         embeddings = model.get_input_embeddings()
@@ -754,6 +724,12 @@ def main():
                 batched=True,
             )
 
+    def print_unsupervised_dataset_example(example: Dict[str, List[int]],   tokenizer: "PreTrainedTokenizer") -> None:
+        print("input_ids:\n{}".format(example["input_ids"]))
+        print("inputs:\n{}".format(tokenizer.decode(example["input_ids"],   skip_special_tokens=False)))
+
+    print_unsupervised_dataset_example(next(iter(lm_datasets["train"])), tokenizer)
+
     if training_args.do_train:
         if "train" not in tokenized_datasets:
             raise ValueError("--do_train requires a train dataset")
@@ -777,7 +753,7 @@ def main():
                 logits = logits[0]
             return logits.argmax(dim=-1)
 
-        metric = evaluate.load("accuracy")
+        metric = evaluate.load("accuracy", cache_dir=model_args.cache_dir)
 
         def compute_metrics(eval_preds):
             preds, labels = eval_preds
@@ -796,10 +772,8 @@ def main():
         processing_class=tokenizer,
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=default_data_collator,
-        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
-        preprocess_logits_for_metrics=(
-            preprocess_logits_for_metrics if training_args.do_eval and not is_torch_tpu_available() else None
-        ),
+        compute_metrics=compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
 
     # Training
@@ -853,11 +827,6 @@ def main():
         trainer.push_to_hub(**kwargs)
     else:
         trainer.create_model_card(**kwargs)
-
-
-def _mp_fn(index):
-    # For xla_spawn (TPUs)
-    main()
 
 
 if __name__ == "__main__":
