@@ -219,16 +219,6 @@ class DataTrainingArguments:
             )
         },
     )
-    truncate_or_pad: Optional[bool] = field(
-        default=True,
-        metadata={
-            "help": (
-                "Indicates whether the transformed example should be truncated or padded to maintain "
-                "the same length as the original example. "
-                "Default is True. If False, the function will not truncate or pad the examples."
-            )
-        },
-    )
     fim_prefix_token: Optional[str] = field(
         default="<fim_prefix>",
         metadata={"help": ("Fill-in-Middle Prefix token. Defaults to '<fim_prefix>'.")},
@@ -240,15 +230,6 @@ class DataTrainingArguments:
     fim_suffix_token: Optional[str] = field(
         default="<fim_suffix>",
         metadata={"help": ("Fill-in-Middle Suffix token. Defaults to '<fim_suffix>'.")},
-    )
-    pad_token: Optional[str] = field(
-        default="<fim_pad>",
-        metadata={
-            "help": (
-                "Fill-in-Middle Pad token. Used only when 'truncate_or_pad' is set to True. "
-                "Defaults to '<fim_pad>'."
-            )
-        },
     )
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
@@ -491,8 +472,6 @@ def main():
 
     # Add the new FIM tokens to the tokenizer and resize model's vocab embeddings
     special_tokens = [data_args.fim_prefix_token, data_args.fim_middle_token, data_args.fim_suffix_token]
-    if data_args.truncate_or_pad:
-        special_tokens.append(data_args.pad_token)
 
     # Get the factor by which the embedding layer should be padded based on the device
     pad_factor = 1
@@ -636,11 +615,6 @@ def main():
     prefix_tok_id = tokenizer.convert_tokens_to_ids(data_args.fim_prefix_token)
     middle_tok_id = tokenizer.convert_tokens_to_ids(data_args.fim_middle_token)
     suffix_tok_id = tokenizer.convert_tokens_to_ids(data_args.fim_suffix_token)
-    pad_tok_id = None
-
-    # If truncate_or_pad is on, also get pad token id
-    if data_args.truncate_or_pad:
-        pad_tok_id = tokenizer.convert_tokens_to_ids(data_args.pad_token)
 
     # The two functions below perform the FIM transformation on the data (either PSM or SPM or PSM+SPM)
     # Don't call fim_transform directly in .map()
@@ -655,14 +629,6 @@ def main():
             prefix = example[: boundaries[0]]
             middle = example[boundaries[0] : boundaries[1]]
             suffix = example[boundaries[1] :]
-
-            if data_args.truncate_or_pad:
-                total_length = len(prefix) + len(middle) + len(suffix) + 3
-                diff = total_length - len(example)
-                if diff > 0:
-                    suffix = suffix[: max(0, len(suffix) - diff)]
-                elif diff < 0:
-                    suffix.extend([pad_tok_id] * (-diff))
 
             if np_rng.binomial(1, data_args.fim_spm_rate):
                 # Apply Suffix-Prefix-Middle (SPM) transformation
