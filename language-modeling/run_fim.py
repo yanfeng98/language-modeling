@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
 from typing import Dict, List
+from contextlib import nullcontext
 
 import datasets
 import evaluate
@@ -28,6 +29,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     PreTrainedTokenizer,
+    PreTrainedModel,
     HfArgumentParser,
     Trainer,
     TrainingArguments,
@@ -473,72 +475,53 @@ def main():
     # Add the new FIM tokens to the tokenizer and resize model's vocab embeddings
     special_tokens = [data_args.fim_prefix_token, data_args.fim_middle_token, data_args.fim_suffix_token]
 
-    # Get the factor by which the embedding layer should be padded based on the device
-    pad_factor = 1
-    if torch.cuda.is_available():
-        pad_factor = 8
+    logger.info(f"len(tokenizer): {len(tokenizer)}")
 
     # Add the new tokens to the tokenizer
     tokenizer.add_tokens(special_tokens)
-    original_embeddings = model.get_input_embeddings()
 
-    if is_deepspeed_zero3_enabled():
-        import deepspeed
+    logger.info(f"len(tokenizer): {len(tokenizer)}")
 
-        with deepspeed.zero.GatheredParameters(original_embeddings.weight, modifier_rank=0):
-            # Get the pre-expansion embeddings of the model and resize the embedding layer
-            model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=pad_factor)
-            embeddings = model.get_input_embeddings()
+    def resize_embedding_layer(model: "PreTrainedModel", tokenizer: "PreTrainedTokenizer") -> None:
+        r"""
+        Resize token embeddings.
+        """
+        if is_deepspeed_zero3_enabled():
+            import deepspeed  # type: ignore
 
-            # Sample the embeddings for the new tokens from a multivariate normal distribution
-            # We do this so that the new embeddings are close to the original embeddings and not necessarily zero
-            # More on this: https://nlp.stanford.edu/~johnhew/vocab-expansion.html
-            mean = original_embeddings.mean(dim=0)
-            n = original_embeddings.size()[0]
-            sigma = ((original_embeddings - mean).T @ (original_embeddings - mean)) / n
-            dist = torch.distributions.multivariate_normal.MultivariateNormal(
-                mean,
-                covariance_matrix=1e-5 * sigma,
-            )
-            new_token_embeddings = torch.stack(
-                tuple((dist.sample() for _ in range(len(special_tokens)))),
-                dim=0,
-            )
-    else:
-        original_embeddings = model.get_input_embeddings().weight.data
-        # Get the pre-expansion embeddings of the model and resize the embedding layer
-        model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=pad_factor)
-        embeddings = model.get_input_embeddings()
+            params = [model.get_input_embeddings().weight]
+            if model.get_output_embeddings() is not None and not model.config.tie_word_embeddings:
+                params.append(model.get_output_embeddings().weight)
 
-        # Sample the embeddings for the new tokens from a multivariate normal distribution
-        # We do this so that the new embeddings are close to the original embeddings and not necessarily zero
-        # More on this: https://nlp.stanford.edu/~johnhew/vocab-expansion.html
-        mean = original_embeddings.mean(dim=0)
-        n = original_embeddings.size()[0]
-        sigma = ((original_embeddings - mean).T @ (original_embeddings - mean)) / n
-        dist = torch.distributions.multivariate_normal.MultivariateNormal(
-            mean,
-            covariance_matrix=1e-5 * sigma,
-        )
-        new_token_embeddings = torch.stack(
-            tuple((dist.sample() for _ in range(len(special_tokens)))),
-            dim=0,
-        )
+            context_maybe_zero3 = deepspeed.zero.GatheredParameters(params, modifier_rank=0)
+        else:
+            context_maybe_zero3 = nullcontext()
 
-    if is_deepspeed_zero3_enabled():
-        import deepspeed
+        with context_maybe_zero3:
+            current_embedding_size = model.get_input_embeddings().weight.size(0)
 
-        with deepspeed.zero.GatheredParameters(embeddings.weight, modifier_rank=0):
-            # Set the new tokens' embeddings to the newly sampled embeddings
-            embeddings.weight.data[-len(special_tokens) :] = new_token_embeddings
-    else:
-        # Set the new tokens' embeddings to the newly sampled embeddings
-        embeddings.weight.data[-len(special_tokens) :] = new_token_embeddings
+        if len(tokenizer) > current_embedding_size:
 
-    # Update the model's embeddings with the new embeddings
-    model.set_input_embeddings(embeddings)
+            if not isinstance(model.get_output_embeddings(), torch.nn.Linear):
+                raise ValueError("Current model does not support resizing embedding layers.")
 
-    logger.info("Added special tokens to the tokenizer and resized model's embedding layer")
+            model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
+            with context_maybe_zero3:
+                new_embedding_size = model.get_input_embeddings().weight.size(0)
+                num_new_tokens = new_embedding_size - current_embedding_size
+                _noisy_mean_initialization(model.get_input_embeddings().weight.data, num_new_tokens)
+                _noisy_mean_initialization(model.get_output_embeddings().weight.data, num_new_tokens)
+
+            logger.info(f"Resized token embeddings from {current_embedding_size} to {new_embedding_size}.")
+
+    def _noisy_mean_initialization(embed_weight: "torch.Tensor", num_new_tokens: int) -> None:
+        embedding_dim = embed_weight.size(1)
+        avg_weight = embed_weight[:-num_new_tokens].mean(dim=0, keepdim=True)
+        noise_weight = torch.empty_like(embed_weight[-num_new_tokens:])
+        noise_weight.normal_(mean=0, std=(1.0 / math.sqrt(embedding_dim)))
+        embed_weight[-num_new_tokens:] = avg_weight + noise_weight
+
+    resize_embedding_layer(model, tokenizer)
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
