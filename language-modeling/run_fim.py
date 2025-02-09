@@ -34,7 +34,6 @@ from transformers import (
     Trainer,
     TrainingArguments,
     default_data_collator,
-    is_torch_tpu_available,
     set_seed,
 )
 from transformers.integrations import is_deepspeed_zero3_enabled
@@ -131,15 +130,6 @@ class ModelArguments:
             "help": (
                 "It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. "
                 "set True will benefit LLM loading time and RAM consumption."
-            )
-        },
-    )
-    pad_to_multiple_of: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Whether to pad the embedding layer to a multiple depending on the device. ",
-                "For NVIDIA GPUs, this will be a multiple of 8, for TPUs a multiple of 128.",
             )
         },
     )
